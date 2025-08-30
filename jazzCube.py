@@ -10,12 +10,11 @@ import threading
 import queue
 import time
 import math
+import numpy as np
 
 class RubiksCube:
-    def __init__(self, size_x, size_y, size_z):
-        self.size_x = size_x
-        self.size_y = size_y
-        self.size_z = size_z
+    def __init__(self, size):
+        self.size = size
         self.rotation_x = 20
         self.rotation_y = 45
         self.cube_size = 1.0
@@ -25,101 +24,181 @@ class RubiksCube:
         # Animation variables
         self.is_animating = False
         self.animation_progress = 0.0
-        self.animation_speed = 0.1
+        self.animation_speed = 0.08  # Slower for smoother animation
         self.current_rotation = None
-        self.animation_cubes = []
         
-        # Bright colors for each face
+        # Color scheme - standard Rubik's cube colors
         self.colors = [
-            [1.0, 0.0, 0.0],  # Red - Left (X=0)
-            [0.0, 1.0, 0.0],  # Green - Right (X=max)
-            [0.0, 0.0, 1.0],  # Blue - Bottom (Y=0)
-            [1.0, 1.0, 0.0],  # Yellow - Top (Y=max)
-            [1.0, 0.5, 0.0],  # Orange - Back (Z=0)
-            [1.0, 1.0, 1.0],  # White - Front (Z=max)
+            [1.0, 1.0, 1.0],  # White - Front (positive Z)
+            [1.0, 1.0, 0.0],  # Yellow - Back (negative Z)  
+            [0.0, 1.0, 0.0],  # Green - Right (positive X)
+            [0.0, 0.0, 1.0],  # Blue - Left (negative X)
+            [1.0, 0.0, 0.0],  # Red - Top (positive Y)
+            [1.0, 0.5, 0.0],  # Orange - Bottom (negative Y)
         ]
         
-        # Generate solved state
-        self.cubes = self.generate_solved_state()
+        # Initialize cube state - only store colors for visible faces
+        self.reset_cube()
+        self.move_history = []
+        
+        print(f"Created {size}x{size}x{size} cube with optimized rendering")
+
+    def reset_cube(self):
+        """Reset cube to solved state"""
+        self.cube_state = {}
+        
+        # Only create cubes that have at least one visible face (on the exterior)
+        for x in range(self.size):
+            for y in range(self.size):
+                for z in range(self.size):
+                    # Only create cube if it's on the exterior
+                    if (x == 0 or x == self.size-1 or 
+                        y == 0 or y == self.size-1 or 
+                        z == 0 or z == self.size-1):
+                        
+                        # Determine visible faces and their solved colors
+                        faces = {}
+                        if z == self.size-1: faces['front'] = 0   # White
+                        if z == 0: faces['back'] = 1              # Yellow
+                        if x == self.size-1: faces['right'] = 2   # Green
+                        if x == 0: faces['left'] = 3              # Blue
+                        if y == self.size-1: faces['top'] = 4     # Red
+                        if y == 0: faces['bottom'] = 5            # Orange
+                        
+                        self.cube_state[(x, y, z)] = faces
+        
+        self.move_history = []
         self.is_scrambled = False
-        self.scramble_moves = []
-        self.solve_moves = []
-        
-        print(f"Created {size_x}x{size_y}x{size_z} cube with {len(self.cubes)} small cubes")
+        print(f"Reset complete - tracking {len(self.cube_state)} exterior cubes")
 
-    def generate_solved_state(self):
-        """Generate the solved state of the cube"""
-        cubes = []
-        spacing = self.cube_size + self.gap
+    def get_face_positions(self, face, layer=0):
+        """Get positions of cubes in a specific face/slice"""
+        positions = []
         
-        # Center the cube around origin
-        start_x = -(self.size_x - 1) * spacing / 2
-        start_y = -(self.size_y - 1) * spacing / 2
-        start_z = -(self.size_z - 1) * spacing / 2
+        if face == 'R':  # Right face
+            x = self.size - 1 - layer
+            positions = [(x, y, z) for y in range(self.size) for z in range(self.size) 
+                        if (x, y, z) in self.cube_state]
+        elif face == 'L':  # Left face
+            x = layer
+            positions = [(x, y, z) for y in range(self.size) for z in range(self.size) 
+                        if (x, y, z) in self.cube_state]
+        elif face == 'U':  # Up face
+            y = self.size - 1 - layer
+            positions = [(x, y, z) for x in range(self.size) for z in range(self.size) 
+                        if (x, y, z) in self.cube_state]
+        elif face == 'D':  # Down face
+            y = layer
+            positions = [(x, y, z) for x in range(self.size) for z in range(self.size) 
+                        if (x, y, z) in self.cube_state]
+        elif face == 'F':  # Front face
+            z = self.size - 1 - layer
+            positions = [(x, y, z) for x in range(self.size) for y in range(self.size) 
+                        if (x, y, z) in self.cube_state]
+        elif face == 'B':  # Back face
+            z = layer
+            positions = [(x, y, z) for x in range(self.size) for y in range(self.size) 
+                        if (x, y, z) in self.cube_state]
         
-        for x in range(self.size_x):
-            for y in range(self.size_y):
-                for z in range(self.size_z):
-                    pos_x = start_x + x * spacing
-                    pos_y = start_y + y * spacing
-                    pos_z = start_z + z * spacing
-                    
-                    # Determine which faces are visible and their solved colors
-                    colors = [-1, -1, -1, -1, -1, -1]  # [left, right, bottom, top, back, front]
-                    
-                    if x == 0: colors[0] = 0  # Left face - Red
-                    if x == self.size_x - 1: colors[1] = 1  # Right face - Green
-                    if y == 0: colors[2] = 2  # Bottom face - Blue
-                    if y == self.size_y - 1: colors[3] = 3  # Top face - Yellow
-                    if z == 0: colors[4] = 4  # Back face - Orange
-                    if z == self.size_z - 1: colors[5] = 5  # Front face - White
-                    
-                    cubes.append({
-                        'pos': [pos_x, pos_y, pos_z],
-                        'colors': colors,
-                        'grid_pos': [x, y, z],
-                        'original_pos': [pos_x, pos_y, pos_z]
-                    })
-        
-        return cubes
+        return positions
 
-    def get_face_cubes(self, face, layer=0):
-        """Get all cubes that belong to a specific face and layer"""
-        face_cubes = []
+    def rotate_face_positions(self, positions, face, clockwise=True):
+        """Rotate the positions of cubes in a face"""
+        if not positions:
+            return {}
         
-        if face == 'R':  # Right face (X = max)
-            target_x = self.size_x - 1 - layer
-            face_cubes = [i for i, cube in enumerate(self.cubes) if cube['grid_pos'][0] == target_x]
-        elif face == 'L':  # Left face (X = 0)
-            target_x = layer
-            face_cubes = [i for i, cube in enumerate(self.cubes) if cube['grid_pos'][0] == target_x]
-        elif face == 'U':  # Up face (Y = max)
-            target_y = self.size_y - 1 - layer
-            face_cubes = [i for i, cube in enumerate(self.cubes) if cube['grid_pos'][1] == target_y]
-        elif face == 'D':  # Down face (Y = 0)
-            target_y = layer
-            face_cubes = [i for i, cube in enumerate(self.cubes) if cube['grid_pos'][1] == target_y]
-        elif face == 'F':  # Front face (Z = max)
-            target_z = self.size_z - 1 - layer
-            face_cubes = [i for i, cube in enumerate(self.cubes) if cube['grid_pos'][2] == target_z]
-        elif face == 'B':  # Back face (Z = 0)
-            target_z = layer
-            face_cubes = [i for i, cube in enumerate(self.cubes) if cube['grid_pos'][2] == target_z]
+        # Group positions by their layer coordinate
+        if face in ['R', 'L']:
+            # X-axis rotation: rotate in YZ plane
+            fixed_x = positions[0][0]
+            coords = [(pos[1], pos[2]) for pos in positions]
+            new_coords = self.rotate_2d_coords(coords, clockwise ^ (face == 'L'))
+            new_positions = [(fixed_x, ny, nz) for ny, nz in new_coords]
+        elif face in ['U', 'D']:
+            # Y-axis rotation: rotate in XZ plane
+            fixed_y = positions[0][1]
+            coords = [(pos[0], pos[2]) for pos in positions]
+            new_coords = self.rotate_2d_coords(coords, clockwise ^ (face == 'D'))
+            new_positions = [(nx, fixed_y, nz) for nx, nz in new_coords]
+        else:  # F, B
+            # Z-axis rotation: rotate in XY plane
+            fixed_z = positions[0][2]
+            coords = [(pos[0], pos[1]) for pos in positions]
+            new_coords = self.rotate_2d_coords(coords, clockwise ^ (face == 'B'))
+            new_positions = [(nx, ny, fixed_z) for nx, ny in new_coords]
         
-        return face_cubes
+        # Create mapping from old to new positions
+        position_mapping = {}
+        for i, old_pos in enumerate(positions):
+            position_mapping[old_pos] = new_positions[i]
+        
+        return position_mapping
 
-    def rotate_matrix_90(self, matrix):
-        """Rotate a 2D matrix 90 degrees clockwise"""
-        n = len(matrix)
-        rotated = [[None for _ in range(n)] for _ in range(n)]
-        for i in range(n):
-            for j in range(n):
-                rotated[j][n-1-i] = matrix[i][j]
-        return rotated
+    def rotate_2d_coords(self, coords, clockwise=True):
+        """Rotate 2D coordinates 90 degrees around center"""
+        if not coords:
+            return []
+        
+        # Find center
+        min_coord = min(coords)
+        max_coord = max(coords)
+        center = ((min_coord[0] + max_coord[0]) / 2, (min_coord[1] + max_coord[1]) / 2)
+        
+        rotated = []
+        for x, y in coords:
+            # Translate to origin
+            tx, ty = x - center[0], y - center[1]
+            # Rotate 90 degrees
+            if clockwise:
+                nx, ny = ty, -tx
+            else:
+                nx, ny = -ty, tx
+            # Translate back
+            rotated.append((nx + center[0], ny + center[1]))
+        
+        # Convert back to integers
+        return [(round(x), round(y)) for x, y in rotated]
 
-    def apply_rotation(self, face, clockwise=True):
-        """Apply a rotation to a face"""
+    def rotate_cube_colors(self, old_faces, face, clockwise=True):
+        """Rotate colors on a cube when its position changes"""
+        if not old_faces:
+            return {}
+        
+        new_faces = old_faces.copy()
+        
+        # Rotate the face colors based on which face is being turned
+        if face in ['R', 'L']:
+            # X-axis rotation affects front, back, top, bottom faces
+            cycle = ['front', 'top', 'back', 'bottom']
+        elif face in ['U', 'D']:
+            # Y-axis rotation affects front, right, back, left faces
+            cycle = ['front', 'right', 'back', 'left']
+        else:  # F, B
+            # Z-axis rotation affects top, right, bottom, left faces
+            cycle = ['top', 'right', 'bottom', 'left']
+        
+        # Apply rotation direction
+        if not clockwise ^ (face in ['L', 'D', 'B']):
+            cycle.reverse()
+        
+        # Rotate colors in the cycle
+        if all(c in old_faces for c in cycle):
+            temp = old_faces[cycle[0]]
+            for i in range(len(cycle) - 1):
+                if cycle[i+1] in old_faces:
+                    new_faces[cycle[i]] = old_faces[cycle[i+1]]
+            new_faces[cycle[-1]] = temp
+        
+        return new_faces
+
+    def apply_rotation(self, face, layer=0, clockwise=True):
+        """Apply a rotation to a face/slice"""
         if self.is_animating:
+            return False
+        
+        # Get affected positions
+        positions = self.get_face_positions(face, layer)
+        if not positions:
             return False
         
         # Start animation
@@ -127,334 +206,192 @@ class RubiksCube:
         self.animation_progress = 0.0
         self.current_rotation = {
             'face': face,
+            'layer': layer,
             'clockwise': clockwise,
-            'cubes': self.get_face_cubes(face),
+            'positions': positions,
             'axis': self.get_rotation_axis(face)
         }
-        self.animation_cubes = self.current_rotation['cubes'][:]
         
         return True
 
     def get_rotation_axis(self, face):
-        """Get the rotation axis for a face"""
+        """Get rotation axis for a face"""
         axes = {
-            'R': (1, 0, 0),  # X axis
-            'L': (1, 0, 0),  # X axis
-            'U': (0, 1, 0),  # Y axis
-            'D': (0, 1, 0),  # Y axis
-            'F': (0, 0, 1),  # Z axis
-            'B': (0, 0, 1),  # Z axis
+            'R': (1, 0, 0), 'L': (-1, 0, 0),
+            'U': (0, 1, 0), 'D': (0, -1, 0),
+            'F': (0, 0, 1), 'B': (0, 0, -1)
         }
         return axes.get(face, (1, 0, 0))
 
     def update_animation(self):
-        """Update animation state"""
+        """Update animation progress"""
         if not self.is_animating:
             return
         
         self.animation_progress += self.animation_speed
         
         if self.animation_progress >= 1.0:
-            # Animation complete - apply the actual rotation
             self.complete_rotation()
             self.is_animating = False
-            self.animation_progress = 0.0
-            self.current_rotation = None
-            self.animation_cubes = []
 
     def complete_rotation(self):
-        """Complete the rotation by updating cube positions and colors"""
+        """Complete the rotation by updating cube state"""
         if not self.current_rotation:
             return
         
         face = self.current_rotation['face']
+        layer = self.current_rotation['layer']
         clockwise = self.current_rotation['clockwise']
-        cube_indices = self.current_rotation['cubes']
+        positions = self.current_rotation['positions']
         
-        # Get the affected cubes
-        cubes_to_rotate = [self.cubes[i] for i in cube_indices]
+        # Get new position mapping
+        position_mapping = self.rotate_face_positions(positions, face, clockwise)
         
-        # Create position matrix for the face
-        if face in ['R', 'L']:
-            # X-face: use Y-Z coordinates
-            size_1, size_2 = self.size_y, self.size_z
-            get_coords = lambda cube: (cube['grid_pos'][1], cube['grid_pos'][2])
-            set_coords = lambda cube, y, z: cube['grid_pos'].__setitem__(1, y) or cube['grid_pos'].__setitem__(2, z)
-        elif face in ['U', 'D']:
-            # Y-face: use X-Z coordinates
-            size_1, size_2 = self.size_x, self.size_z
-            get_coords = lambda cube: (cube['grid_pos'][0], cube['grid_pos'][2])
-            set_coords = lambda cube, x, z: cube['grid_pos'].__setitem__(0, x) or cube['grid_pos'].__setitem__(2, z)
-        else:  # F, B
-            # Z-face: use X-Y coordinates
-            size_1, size_2 = self.size_x, self.size_y
-            get_coords = lambda cube: (cube['grid_pos'][0], cube['grid_pos'][1])
-            set_coords = lambda cube, x, y: cube['grid_pos'].__setitem__(0, x) or cube['grid_pos'].__setitem__(1, y)
+        # Create new cube state
+        new_state = {}
         
-        # Create matrix of cube references
-        matrix = [[None for _ in range(size_2)] for _ in range(size_1)]
-        for cube in cubes_to_rotate:
-            coord1, coord2 = get_coords(cube)
-            matrix[coord1][coord2] = cube
+        # Copy non-rotating cubes
+        for pos, faces in self.cube_state.items():
+            if pos not in positions:
+                new_state[pos] = faces.copy()
         
-        # Rotate the matrix
-        if clockwise:
-            rotated_matrix = self.rotate_matrix_90(matrix)
-        else:
-            # Rotate 3 times for counter-clockwise
-            rotated_matrix = matrix
-            for _ in range(3):
-                rotated_matrix = self.rotate_matrix_90(rotated_matrix)
+        # Move and rotate the affected cubes
+        for old_pos in positions:
+            new_pos = position_mapping[old_pos]
+            old_faces = self.cube_state[old_pos]
+            new_faces = self.rotate_cube_colors(old_faces, face, clockwise)
+            new_state[new_pos] = new_faces
         
-        # Update cube positions and grid coordinates
-        spacing = self.cube_size + self.gap
-        start_x = -(self.size_x - 1) * spacing / 2
-        start_y = -(self.size_y - 1) * spacing / 2
-        start_z = -(self.size_z - 1) * spacing / 2
+        self.cube_state = new_state
+        self.move_history.append((face, layer, clockwise))
         
-        for i in range(size_1):
-            for j in range(size_2):
-                cube = rotated_matrix[i][j]
-                if cube:
-                    # Update grid position
-                    if face in ['R', 'L']:
-                        set_coords(cube, i, j)
-                        cube['pos'][1] = start_y + i * spacing
-                        cube['pos'][2] = start_z + j * spacing
-                    elif face in ['U', 'D']:
-                        set_coords(cube, i, j)
-                        cube['pos'][0] = start_x + i * spacing
-                        cube['pos'][2] = start_z + j * spacing
-                    else:  # F, B
-                        set_coords(cube, i, j)
-                        cube['pos'][0] = start_x + i * spacing
-                        cube['pos'][1] = start_y + j * spacing
-        
-        # Rotate colors on each cube
-        for cube in cubes_to_rotate:
-            self.rotate_cube_colors(cube, face, clockwise)
+        # Clear animation state
+        self.current_rotation = None
+        self.animation_progress = 0.0
 
-    def rotate_cube_colors(self, cube, face, clockwise):
-        """Rotate the colors on a cube based on face rotation"""
-        colors = cube['colors'][:]
-        
-        # Color rotation mappings for each face
-        if face == 'R':
-            if clockwise:
-                # Front->Up->Back->Down->Front
-                cube['colors'][3] = colors[5]  # Top <- Front
-                cube['colors'][4] = colors[3]  # Back <- Top
-                cube['colors'][2] = colors[4]  # Bottom <- Back
-                cube['colors'][5] = colors[2]  # Front <- Bottom
-            else:
-                cube['colors'][5] = colors[3]  # Front <- Top
-                cube['colors'][2] = colors[5]  # Bottom <- Front
-                cube['colors'][4] = colors[2]  # Back <- Bottom
-                cube['colors'][3] = colors[4]  # Top <- Back
-        
-        elif face == 'L':
-            if clockwise:
-                # Front->Down->Back->Up->Front
-                cube['colors'][2] = colors[5]  # Bottom <- Front
-                cube['colors'][4] = colors[2]  # Back <- Bottom
-                cube['colors'][3] = colors[4]  # Top <- Back
-                cube['colors'][5] = colors[3]  # Front <- Top
-            else:
-                cube['colors'][3] = colors[5]  # Top <- Front
-                cube['colors'][4] = colors[3]  # Back <- Top
-                cube['colors'][2] = colors[4]  # Bottom <- Back
-                cube['colors'][5] = colors[2]  # Front <- Bottom
-        
-        elif face == 'U':
-            if clockwise:
-                # Front->Right->Back->Left->Front
-                cube['colors'][1] = colors[5]  # Right <- Front
-                cube['colors'][4] = colors[1]  # Back <- Right
-                cube['colors'][0] = colors[4]  # Left <- Back
-                cube['colors'][5] = colors[0]  # Front <- Left
-            else:
-                cube['colors'][0] = colors[5]  # Left <- Front
-                cube['colors'][4] = colors[0]  # Back <- Left
-                cube['colors'][1] = colors[4]  # Right <- Back
-                cube['colors'][5] = colors[1]  # Front <- Right
-        
-        elif face == 'D':
-            if clockwise:
-                # Front->Left->Back->Right->Front
-                cube['colors'][0] = colors[5]  # Left <- Front
-                cube['colors'][4] = colors[0]  # Back <- Left
-                cube['colors'][1] = colors[4]  # Right <- Back
-                cube['colors'][5] = colors[1]  # Front <- Right
-            else:
-                cube['colors'][1] = colors[5]  # Right <- Front
-                cube['colors'][4] = colors[1]  # Back <- Right
-                cube['colors'][0] = colors[4]  # Left <- Back
-                cube['colors'][5] = colors[0]  # Front <- Left
-        
-        elif face == 'F':
-            if clockwise:
-                # Top->Right->Bottom->Left->Top
-                cube['colors'][1] = colors[3]  # Right <- Top
-                cube['colors'][2] = colors[1]  # Bottom <- Right
-                cube['colors'][0] = colors[2]  # Left <- Bottom
-                cube['colors'][3] = colors[0]  # Top <- Left
-            else:
-                cube['colors'][0] = colors[3]  # Left <- Top
-                cube['colors'][2] = colors[0]  # Bottom <- Left
-                cube['colors'][1] = colors[2]  # Right <- Bottom
-                cube['colors'][3] = colors[1]  # Top <- Right
-        
-        elif face == 'B':
-            if clockwise:
-                # Top->Left->Bottom->Right->Top
-                cube['colors'][0] = colors[3]  # Left <- Top
-                cube['colors'][2] = colors[0]  # Bottom <- Left
-                cube['colors'][1] = colors[2]  # Right <- Bottom
-                cube['colors'][3] = colors[1]  # Top <- Right
-            else:
-                cube['colors'][1] = colors[3]  # Right <- Top
-                cube['colors'][2] = colors[1]  # Bottom <- Right
-                cube['colors'][0] = colors[2]  # Left <- Bottom
-                cube['colors'][3] = colors[0]  # Top <- Left
-
-    def scramble(self):
-        """Scramble the cube with random moves"""
+    def scramble(self, num_moves=None):
+        """Scramble the cube"""
         if self.is_animating:
-            return "Please wait for current animation to finish"
+            return "Animation in progress..."
         
-        print("Scrambling cube...")
-        self.solve_step = 0
-        self.is_scrambled = True
+        if num_moves is None:
+            num_moves = max(20, self.size * 10)
+        
         self.scramble_moves = []
-        
-        # Generate random moves
         faces = ['R', 'L', 'U', 'D', 'F', 'B']
-        num_moves = min(20, max(10, (self.size_x + self.size_y + self.size_z) * 3))
         
         for _ in range(num_moves):
             face = random.choice(faces)
+            layer = random.randint(0, self.size - 1) if self.size > 3 else 0
             clockwise = random.choice([True, False])
-            self.scramble_moves.append((face, clockwise))
+            self.scramble_moves.append((face, layer, clockwise))
         
-        # Generate solve sequence (reverse of scramble)
-        self.solve_moves = []
-        for face, clockwise in reversed(self.scramble_moves):
-            self.solve_moves.append((face, not clockwise))
-        
-        print(f"Generated {len(self.scramble_moves)} scramble moves")
-        return f"Scrambling with {len(self.scramble_moves)} moves..."
+        self.is_scrambled = True
+        return f"Generated {num_moves} scramble moves"
 
-    def execute_scramble_moves(self):
-        """Execute one scramble move if available"""
-        if not self.is_scrambled or not self.scramble_moves or self.is_animating:
+    def execute_next_scramble(self):
+        """Execute next scramble move"""
+        if not hasattr(self, 'scramble_moves') or not self.scramble_moves:
             return False
         
-        face, clockwise = self.scramble_moves.pop(0)
-        return self.apply_rotation(face, clockwise)
-
-    def solve_one_step(self):
-        """Make one move towards solving the cube"""
-        if not self.is_scrambled:
-            return "Scramble the cube first!"
-        
         if self.is_animating:
-            return "Please wait for current animation to finish"
+            return False
         
-        if not self.solve_moves:
-            self.is_scrambled = False
-            return "🎉 Cube is already solved!"
-        
-        face, clockwise = self.solve_moves.pop(0)
-        if self.apply_rotation(face, clockwise):
-            self.solve_step += 1
-            remaining = len(self.solve_moves)
-            
-            if remaining == 0:
-                self.is_scrambled = False
-                return f"🎉 Cube solved in {self.solve_step} steps!"
-            else:
-                direction = "clockwise" if clockwise else "counter-clockwise"
-                return f"Step {self.solve_step}: {face} {direction}, {remaining} moves remaining"
-        
-        return "Animation in progress..."
+        face, layer, clockwise = self.scramble_moves.pop(0)
+        return self.apply_rotation(face, layer, clockwise)
 
-    def reset_to_solved(self):
-        """Reset cube to solved state"""
+    def solve_step(self):
+        """Perform one step of solving (reverse last move)"""
         if self.is_animating:
-            return "Please wait for current animation to finish"
+            return "Animation in progress..."
         
-        self.cubes = self.generate_solved_state()
-        self.solve_step = 0
-        self.is_scrambled = False
-        self.scramble_moves = []
-        self.solve_moves = []
-        return "Cube reset to solved state!"
+        if not self.move_history:
+            return "Cube is already solved!"
+        
+        # Reverse the last move
+        face, layer, clockwise = self.move_history.pop()
+        if self.apply_rotation(face, layer, not clockwise):
+            return f"Undid {face} move - {len(self.move_history)} moves remaining"
+        
+        return "Failed to apply move"
 
-    def reset_view(self):
-        """Reset camera view"""
-        self.rotation_x = 20
-        self.rotation_y = 45
-        return "View reset!"
+    def get_world_position(self, grid_pos):
+        """Convert grid position to world coordinates"""
+        x, y, z = grid_pos
+        spacing = self.cube_size + self.gap
+        world_x = (x - (self.size - 1) / 2) * spacing
+        world_y = (y - (self.size - 1) / 2) * spacing
+        world_z = (z - (self.size - 1) / 2) * spacing
+        return [world_x, world_y, world_z]
 
     def draw_cube_face(self, vertices, color):
         """Draw a single face of a cube"""
-        if len(color) == 3:
-            glColor3fv(color)
-        else:
-            glColor4fv(color)
+        glColor3fv(color)
         glBegin(GL_QUADS)
         for vertex in vertices:
             glVertex3fv(vertex)
         glEnd()
 
-    def draw_single_cube(self, cube_data, animated_transform=None):
-        """Draw one small cube with optional animation transform"""
-        x, y, z = cube_data['pos']
-        colors = cube_data['colors']
+    def draw_single_cube(self, position, faces):
+        """Draw a single cube at given position"""
+        world_pos = self.get_world_position(position)
+        x, y, z = world_pos
         s = self.cube_size / 2
         
+        # Apply animation rotation if this cube is being rotated
         glPushMatrix()
         
-        # Apply animation transform if provided
-        if animated_transform:
-            axis, angle = animated_transform
-            glTranslatef(x, y, z)
-            glRotatef(angle, *axis)
-            glTranslatef(-x, -y, -z)
+        if self.is_animating and position in self.current_rotation['positions']:
+            # Rotate around face center
+            face = self.current_rotation['face']
+            axis = self.current_rotation['axis']
+            angle = self.animation_progress * 90
+            if not self.current_rotation['clockwise']:
+                angle = -angle
+            
+            # Calculate rotation center
+            if face in ['R', 'L']:
+                center_x = (self.current_rotation['layer'] - (self.size-1)/2) * (self.cube_size + self.gap)
+                glTranslatef(center_x, 0, 0)
+                glRotatef(angle, *axis)
+                glTranslatef(-center_x, 0, 0)
+            elif face in ['U', 'D']:
+                center_y = (self.current_rotation['layer'] - (self.size-1)/2) * (self.cube_size + self.gap)
+                glTranslatef(0, center_y, 0)
+                glRotatef(angle, *axis)
+                glTranslatef(0, -center_y, 0)
+            else:  # F, B
+                center_z = (self.current_rotation['layer'] - (self.size-1)/2) * (self.cube_size + self.gap)
+                glTranslatef(0, 0, center_z)
+                glRotatef(angle, *axis)
+                glTranslatef(0, 0, -center_z)
         
-        # Define all 8 vertices of the cube
+        # Cube vertices
         vertices = [
-            [x-s, y-s, z-s],  # 0: left-bottom-back
-            [x+s, y-s, z-s],  # 1: right-bottom-back
-            [x+s, y+s, z-s],  # 2: right-top-back
-            [x-s, y+s, z-s],  # 3: left-top-back
-            [x-s, y-s, z+s],  # 4: left-bottom-front
-            [x+s, y-s, z+s],  # 5: right-bottom-front
-            [x+s, y+s, z+s],  # 6: right-top-front
-            [x-s, y+s, z+s],  # 7: left-top-front
+            [x-s, y-s, z-s], [x+s, y-s, z-s], [x+s, y+s, z-s], [x-s, y+s, z-s],  # back
+            [x-s, y-s, z+s], [x+s, y-s, z+s], [x+s, y+s, z+s], [x-s, y+s, z+s],  # front
         ]
         
-        # Define faces in order: [left, right, bottom, top, back, front]
-        faces = [
-            [vertices[0], vertices[3], vertices[7], vertices[4]],  # left
-            [vertices[1], vertices[5], vertices[6], vertices[2]],  # right
-            [vertices[0], vertices[4], vertices[5], vertices[1]],  # bottom
-            [vertices[3], vertices[2], vertices[6], vertices[7]],  # top
-            [vertices[0], vertices[1], vertices[2], vertices[3]],  # back
-            [vertices[4], vertices[7], vertices[6], vertices[5]],  # front
-        ]
+        # Face definitions
+        face_vertices = {
+            'front':  [vertices[4], vertices[7], vertices[6], vertices[5]],
+            'back':   [vertices[1], vertices[0], vertices[3], vertices[2]],
+            'right':  [vertices[5], vertices[6], vertices[2], vertices[1]],
+            'left':   [vertices[0], vertices[4], vertices[7], vertices[3]],
+            'top':    [vertices[3], vertices[7], vertices[6], vertices[2]],
+            'bottom': [vertices[0], vertices[1], vertices[5], vertices[4]],
+        }
         
-        # Draw faces
-        for i, face_vertices in enumerate(faces):
-            color_idx = colors[i]
-            if color_idx >= 0:  # Visible colored face
-                self.draw_cube_face(face_vertices, self.colors[color_idx])
-            else:  # Interior face
-                self.draw_cube_face(face_vertices, [0.3, 0.3, 0.3])
+        # Draw visible faces
+        for face_name, color_idx in faces.items():
+            if face_name in face_vertices:
+                face_verts = face_vertices[face_name]
+                color = self.colors[color_idx]
+                self.draw_cube_face(face_verts, color)
         
         # Draw wireframe
         glColor3f(0.0, 0.0, 0.0)
-        glLineWidth(1.0)
+        glLineWidth(1.5)
         edges = [
             [0,1], [1,2], [2,3], [3,0],  # back face
             [4,5], [5,6], [6,7], [7,4],  # front face
@@ -471,41 +408,20 @@ class RubiksCube:
 
     def draw(self):
         """Draw the entire cube"""
-        # Update animation
         self.update_animation()
         
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
         
-        # Calculate camera distance
-        max_size = max(self.size_x, self.size_y, self.size_z)
-        camera_distance = max_size * 3
-        
-        # Position and rotate
+        # Camera positioning
+        camera_distance = self.size * 4
         glTranslatef(0.0, 0.0, -camera_distance)
         glRotatef(self.rotation_x, 1, 0, 0)
         glRotatef(self.rotation_y, 0, 1, 0)
         
-        # Calculate animation transform
-        animated_transform = None
-        if self.is_animating and self.current_rotation:
-            axis = self.current_rotation['axis']
-            angle = self.animation_progress * 90
-            if not self.current_rotation['clockwise']:
-                angle = -angle
-            # Adjust direction for different faces
-            face = self.current_rotation['face']
-            if face in ['L', 'D', 'B']:
-                angle = -angle
-            animated_transform = (axis, angle)
-        
-        # Draw all cubes
-        for i, cube in enumerate(self.cubes):
-            # Apply animation to rotating cubes
-            if self.is_animating and i in self.animation_cubes:
-                self.draw_single_cube(cube, animated_transform)
-            else:
-                self.draw_single_cube(cube)
+        # Draw only exterior cubes
+        for position, faces in self.cube_state.items():
+            self.draw_single_cube(position, faces)
 
 class ControlPanel:
     def __init__(self, cube, command_queue):
@@ -513,19 +429,14 @@ class ControlPanel:
         self.command_queue = command_queue
         self.root = None
         self.status_var = None
-        self.scramble_progress = 0
         
     def create_panel(self):
-        """Create the persistent control panel"""
+        """Create the control panel"""
         self.root = tk.Tk()
         self.root.title("Rubik's Cube Controls")
-        self.root.geometry("320x550")
+        self.root.geometry("350x600")
         self.root.resizable(False, False)
         
-        # Position window on the right side of screen
-        self.root.geometry("+1050+100")
-        
-        # Main frame
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
@@ -535,42 +446,32 @@ class ControlPanel:
         title_label.grid(row=0, column=0, columnspan=2, pady=(0, 10))
         
         # Cube info
-        info_text = f"{self.cube.size_x}×{self.cube.size_y}×{self.cube.size_z} Cube"
+        info_text = f"{self.cube.size}×{self.cube.size}×{self.cube.size} Cube"
         info_label = ttk.Label(main_frame, text=info_text, font=('Arial', 10))
         info_label.grid(row=1, column=0, columnspan=2, pady=(0, 15))
         
-        # Status display
+        # Status
         status_frame = ttk.LabelFrame(main_frame, text="Status", padding="5")
         status_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
         
-        self.status_var = tk.StringVar(value="Ready! Click 'Scramble' to start.")
+        self.status_var = tk.StringVar(value="Ready! Optimized for larger cubes.")
         status_label = ttk.Label(status_frame, textvariable=self.status_var, 
-                                wraplength=280, justify=tk.LEFT)
+                                wraplength=300, justify=tk.LEFT)
         status_label.grid(row=0, column=0, sticky=tk.W)
         
         # New cube section
         new_cube_frame = ttk.LabelFrame(main_frame, text="New Cube", padding="10")
         new_cube_frame.grid(row=3, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
         
-        # Dimensions
-        ttk.Label(new_cube_frame, text="Dimensions:").grid(row=0, column=0, sticky=tk.W, pady=2)
-        dim_frame = ttk.Frame(new_cube_frame)
-        dim_frame.grid(row=1, column=0, sticky=tk.W, pady=2)
-        
-        self.x_var = tk.StringVar(value=str(self.cube.size_x))
-        self.y_var = tk.StringVar(value=str(self.cube.size_y))
-        self.z_var = tk.StringVar(value=str(self.cube.size_z))
-        
-        ttk.Entry(dim_frame, textvariable=self.x_var, width=3).grid(row=0, column=0, padx=2)
-        ttk.Label(dim_frame, text="×").grid(row=0, column=1)
-        ttk.Entry(dim_frame, textvariable=self.y_var, width=3).grid(row=0, column=2, padx=2)
-        ttk.Label(dim_frame, text="×").grid(row=0, column=3)
-        ttk.Entry(dim_frame, textvariable=self.z_var, width=3).grid(row=0, column=4, padx=2)
+        ttk.Label(new_cube_frame, text="Size (1-15):").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.size_var = tk.StringVar(value=str(self.cube.size))
+        size_entry = ttk.Entry(new_cube_frame, textvariable=self.size_var, width=5)
+        size_entry.grid(row=0, column=1, sticky=tk.W, padx=(10, 0), pady=2)
         
         ttk.Button(new_cube_frame, text="🆕 Create New Cube", 
-                  command=self.create_new_cube).grid(row=2, column=0, pady=(5, 0))
+                  command=self.create_new_cube).grid(row=1, column=0, columnspan=2, pady=(5, 0))
         
-        # Control buttons
+        # Controls
         controls_frame = ttk.LabelFrame(main_frame, text="Controls", padding="10")
         controls_frame.grid(row=4, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
         
@@ -586,54 +487,58 @@ class ControlPanel:
                   command=self.reset_view).grid(row=2, column=0, padx=(0, 2), 
                                               sticky=(tk.W, tk.E), pady=2)
         
-        ttk.Button(controls_frame, text="✅ Solve All", 
-                  command=self.solve_all).grid(row=2, column=1, padx=(2, 0), 
-                                             sticky=(tk.W, tk.E), pady=2)
+        ttk.Button(controls_frame, text="✅ Reset Cube", 
+                  command=self.reset_cube).grid(row=2, column=1, padx=(2, 0), 
+                                               sticky=(tk.W, tk.E), pady=2)
         
-        # Configure column weights
         controls_frame.columnconfigure(0, weight=1)
         controls_frame.columnconfigure(1, weight=1)
         
+        # Manual rotations
+        manual_frame = ttk.LabelFrame(main_frame, text="Manual Rotations", padding="10")
+        manual_frame.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        faces = [('R', 'Right'), ('L', 'Left'), ('U', 'Up'), ('D', 'Down'), ('F', 'Front'), ('B', 'Back')]
+        for i, (face, name) in enumerate(faces):
+            row = i // 2
+            col = i % 2
+            ttk.Button(manual_frame, text=f"{face} - {name}", 
+                      command=lambda f=face: self.manual_rotation(f)).grid(
+                          row=row, column=col, padx=2, pady=2, sticky=(tk.W, tk.E))
+        
+        manual_frame.columnconfigure(0, weight=1)
+        manual_frame.columnconfigure(1, weight=1)
+        
         # Instructions
-        inst_frame = ttk.LabelFrame(main_frame, text="Controls", padding="10")
-        inst_frame.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
+        inst_frame = ttk.LabelFrame(main_frame, text="Instructions", padding="10")
+        inst_frame.grid(row=6, column=0, columnspan=2, sticky=(tk.W, tk.E))
         
         instructions = [
             "🖱️ Mouse: Drag to rotate view",
-            "⏎ SPACE: One solving step", 
+            "⎵ SPACE: Undo last move", 
             "🔀 S: Start scrambling",
             "🔄 R: Reset camera view",
-            "❌ ESC: Quit"
+            "⌨️ 1-6: Manual face rotations",
+            "⌨️ Hold SHIFT for counter-clockwise",
+            "⌨ ESC: Quit"
         ]
         
         for i, instruction in enumerate(instructions):
-            ttk.Label(inst_frame, text=instruction, font=('Arial', 9)).grid(row=i, column=0, 
+            ttk.Label(inst_frame, text=instruction, font=('Arial', 8)).grid(row=i, column=0, 
                                                                             sticky=tk.W, pady=1)
         
-        # Animation info
-        anim_frame = ttk.LabelFrame(main_frame, text="Animation", padding="10")
-        anim_frame.grid(row=6, column=0, columnspan=2, sticky=(tk.W, tk.E))
-        
-        ttk.Label(anim_frame, text="• Real cube face rotations", font=('Arial', 9)).grid(row=0, column=0, sticky=tk.W)
-        ttk.Label(anim_frame, text="• Smooth 90° turns", font=('Arial', 9)).grid(row=1, column=0, sticky=tk.W)
-        ttk.Label(anim_frame, text="• Authentic solving sequence", font=('Arial', 9)).grid(row=2, column=0, sticky=tk.W)
-        
-        # Start the update loop
         self.update_status()
         
     def create_new_cube(self):
-        """Create a new cube with specified dimensions"""
         try:
-            x = int(self.x_var.get())
-            y = int(self.y_var.get())
-            z = int(self.z_var.get())
-            if x <= 0 or y <= 0 or z <= 0 or x > 8 or y > 8 or z > 8:
-                messagebox.showerror("Error", "Dimensions must be between 1 and 8!")
+            size = int(self.size_var.get())
+            if size < 1 or size > 15:
+                messagebox.showerror("Error", "Size must be between 1 and 15!")
                 return
-            self.command_queue.put(('new_cube', (x, y, z)))
-            self.status_var.set(f"Creating new {x}×{y}×{z} cube...")
+            self.command_queue.put(('new_cube', size))
+            self.status_var.set(f"Creating new {size}×{size}×{size} cube...")
         except ValueError:
-            messagebox.showerror("Error", "Please enter valid numbers!")
+            messagebox.showerror("Error", "Please enter a valid number!")
     
     def scramble_cube(self):
         self.command_queue.put(('scramble', None))
@@ -644,11 +549,13 @@ class ControlPanel:
     def reset_view(self):
         self.command_queue.put(('reset_view', None))
     
-    def solve_all(self):
-        self.command_queue.put(('solve_all', None))
+    def reset_cube(self):
+        self.command_queue.put(('reset_cube', None))
+    
+    def manual_rotation(self, face):
+        self.command_queue.put(('manual_rotation', face))
     
     def update_status(self):
-        """Update status from command queue"""
         try:
             while True:
                 try:
@@ -664,86 +571,74 @@ class ControlPanel:
             self.root.after(100, self.update_status)
     
     def run(self):
-        """Run the control panel"""
         self.create_panel()
         self.root.mainloop()
 
-def run_control_panel(cube, command_queue, status_queue):
-    """Run the control panel in a separate thread"""
-    panel = ControlPanel(cube, command_queue)
-    # Set up bidirectional communication
-    panel.command_queue = command_queue
-    panel.status_queue = status_queue
-    panel.run()
-
 def main():
-    # Start with default 3x3x3 cube
-    size_x, size_y, size_z = 3, 3, 3
+    size = 3  # Start with 3x3x3
     
-    print(f"Starting {size_x}x{size_y}x{size_z} Rubik's cube with real rotations...")
+    print(f"Starting {size}×{size}×{size} Rubik's cube with face rotations...")
     
-    # Initialize Pygame
     pygame.init()
     
-    # Set up display
     width, height = 1000, 800
     screen = pygame.display.set_mode((width, height), DOUBLEBUF | OPENGL)
-    pygame.display.set_caption(f"3D Rubik's Cube ({size_x}x{size_y}x{size_z}) - Animated Rotations")
+    pygame.display.set_caption(f"3D Rubik's Cube ({size}×{size}×{size}) - Face Rotations")
     
-    # Set up OpenGL
+    # OpenGL setup
     glEnable(GL_DEPTH_TEST)
     glClearColor(0.2, 0.2, 0.2, 1.0)
     
-    # Set up perspective
     glMatrixMode(GL_PROJECTION)
     gluPerspective(60, width/height, 1, 100)
     glMatrixMode(GL_MODELVIEW)
     
-    # Create the cube
-    cube = RubiksCube(size_x, size_y, size_z)
+    cube = RubiksCube(size)
     
-    # Set up communication queues
+    # Communication queues
     command_queue = queue.Queue()
     status_queue = queue.Queue()
     
-    # Start control panel in separate thread
-    panel_thread = threading.Thread(target=run_control_panel, 
-                                   args=(cube, command_queue, status_queue), 
-                                   daemon=True)
+    # Control panel thread
+    panel_thread = threading.Thread(target=lambda: ControlPanel(cube, command_queue).run(), daemon=True)
     panel_thread.start()
     
     # Control variables
     mouse_down = False
     last_mouse_pos = [0, 0]
     clock = pygame.time.Clock()
+    keys_pressed = set()
     
-    # Auto-scramble progress
+    # Auto-scramble variables
     auto_scramble_timer = 0
+    scramble_delay = 0.3  # seconds between moves
     
-    print("🎲 Cube ready with animated rotations!")
-    print("Features:")
-    print("• Real Rubik's cube face rotations")  
-    print("• Smooth 90-degree animated turns")
-    print("• Authentic solve sequence (reverse of scramble)")
-    print("• Use SPACE to solve step by step!")
+    print("🎲 Enhanced Rubik's Cube Features:")
+    print("✅ Proper face/slice rotations")
+    print("✅ Only exterior cubes rendered") 
+    print("✅ Support for larger cubes (up to 15×15×15)")
+    print("✅ Undo-based solving")
+    print("✅ Smooth animations")
     
     running = True
     while running:
-        dt = clock.tick(60) / 1000.0  # Delta time in seconds
+        dt = clock.tick(60) / 1000.0
         
         # Auto-execute scramble moves
-        if cube.is_scrambled and cube.scramble_moves and not cube.is_animating:
-            auto_scramble_timer += dt
-            if auto_scramble_timer >= 0.5:  # Execute move every 0.5 seconds
-                if cube.execute_scramble_moves():
-                    remaining = len(cube.scramble_moves)
-                    if remaining > 0:
-                        status_queue.put(f"Scrambling... {remaining} moves remaining")
-                    else:
-                        status_queue.put("Scramble complete! Press SPACE to solve step by step.")
-                auto_scramble_timer = 0
+        if hasattr(cube, 'is_scrambled') and cube.is_scrambled and hasattr(cube, 'scramble_moves'):
+            if cube.scramble_moves and not cube.is_animating:
+                auto_scramble_timer += dt
+                if auto_scramble_timer >= scramble_delay:
+                    if cube.execute_next_scramble():
+                        remaining = len(cube.scramble_moves)
+                        if remaining > 0:
+                            status_queue.put(f"Scrambling... {remaining} moves left")
+                        else:
+                            status_queue.put("Scramble complete! Use SPACE to solve step by step.")
+                            cube.is_scrambled = False
+                    auto_scramble_timer = 0
         
-        # Process commands from control panel
+        # Process commands
         try:
             while True:
                 try:
@@ -753,21 +648,34 @@ def main():
                         status_queue.put(result)
                         auto_scramble_timer = 0
                     elif command == 'solve_step':
-                        result = cube.solve_one_step()
+                        result = cube.solve_step()
                         status_queue.put(result)
                     elif command == 'reset_view':
-                        result = cube.reset_view()
-                        status_queue.put(result)
-                    elif command == 'solve_all':
-                        result = cube.reset_to_solved()
-                        status_queue.put(result)
+                        cube.rotation_x = 20
+                        cube.rotation_y = 45
+                        status_queue.put("View reset!")
+                    elif command == 'reset_cube':
+                        cube.reset_cube()
+                        status_queue.put("Cube reset to solved state!")
                     elif command == 'new_cube':
-                        new_x, new_y, new_z = data
-                        cube = RubiksCube(new_x, new_y, new_z)
-                        pygame.display.set_caption(f"3D Rubik's Cube ({new_x}x{new_y}x{new_z}) - Animated Rotations")
-                        status_queue.put(f"New {new_x}×{new_y}×{new_z} cube created!")
+                        cube = RubiksCube(data)
+                        pygame.display.set_caption(f"3D Rubik's Cube ({data}×{data}×{data}) - Face Rotations")
+                        status_queue.put(f"New {data}×{data}×{data} cube created!")
+                    elif command == 'manual_rotation':
+                        if cube.apply_rotation(data):
+                            status_queue.put(f"Applied {data} rotation")
+                        else:
+                            status_queue.put("Wait for animation to finish")
                 except queue.Empty:
                     break
+        except:
+            pass
+        
+        # Send status updates to control panel
+        try:
+            while not status_queue.empty():
+                msg = status_queue.get_nowait()
+                command_queue.put(msg)
         except:
             pass
         
@@ -776,31 +684,40 @@ def main():
                 running = False
             
             elif event.type == KEYDOWN:
+                keys_pressed.add(event.key)
+                
                 if event.key == K_ESCAPE or event.key == K_q:
                     running = False
                 elif event.key == K_SPACE:
-                    result = cube.solve_one_step()
+                    result = cube.solve_step()
                     status_queue.put(result)
                 elif event.key == K_s:
                     result = cube.scramble()
                     status_queue.put(result)
                     auto_scramble_timer = 0
                 elif event.key == K_r:
-                    result = cube.reset_view()
-                    status_queue.put(result)
-                # Manual face rotations for testing
-                elif event.key == K_1:
-                    cube.apply_rotation('R', True)
-                elif event.key == K_2:
-                    cube.apply_rotation('L', True)
-                elif event.key == K_3:
-                    cube.apply_rotation('U', True)
-                elif event.key == K_4:
-                    cube.apply_rotation('D', True)
-                elif event.key == K_5:
-                    cube.apply_rotation('F', True)
-                elif event.key == K_6:
-                    cube.apply_rotation('B', True)
+                    cube.rotation_x = 20
+                    cube.rotation_y = 45
+                    status_queue.put("View reset!")
+                
+                # Manual face rotations with shift for counter-clockwise
+                shift_pressed = K_LSHIFT in keys_pressed or K_RSHIFT in keys_pressed
+                clockwise = not shift_pressed
+                
+                if event.key == K_1:  # R face
+                    cube.apply_rotation('R', 0, clockwise)
+                elif event.key == K_2:  # L face
+                    cube.apply_rotation('L', 0, clockwise)
+                elif event.key == K_3:  # U face
+                    cube.apply_rotation('U', 0, clockwise)
+                elif event.key == K_4:  # D face
+                    cube.apply_rotation('D', 0, clockwise)
+                elif event.key == K_5:  # F face
+                    cube.apply_rotation('F', 0, clockwise)
+                elif event.key == K_6:  # B face
+                    cube.apply_rotation('B', 0, clockwise)
+                
+                # Arrow keys for camera
                 elif event.key == K_LEFT:
                     cube.rotation_y -= 5
                 elif event.key == K_RIGHT:
@@ -809,6 +726,9 @@ def main():
                     cube.rotation_x -= 5
                 elif event.key == K_DOWN:
                     cube.rotation_x += 5
+            
+            elif event.type == KEYUP:
+                keys_pressed.discard(event.key)
             
             elif event.type == MOUSEBUTTONDOWN:
                 if event.button == 1:
@@ -830,7 +750,6 @@ def main():
                     
                     last_mouse_pos = mouse_pos
         
-        # Draw everything
         cube.draw()
         pygame.display.flip()
     
